@@ -144,6 +144,7 @@ def write_to_gsheet(df: pd.DataFrame):
 
 
 def main():
+    print("###### SCRIPT VERSION: v3-sum-fallback-2026-06-29 ######")
     df = get_all_results()
     print(df)
     write_to_gsheet(df)
