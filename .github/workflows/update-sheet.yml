@@ -1,0 +1,35 @@
+name: Update WoW Midcap Smallcap to Google Sheet
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 1 * * 1-6'
+
+jobs:
+  update-sheet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Debug and install dependencies
+        run: |
+          echo "===== Thu muc hien tai ====="
+          pwd
+          echo "===== Danh sach toan bo file ====="
+          ls -la
+          echo "===== Tim file requirements.txt o moi noi ====="
+          find . -iname "requirements.txt"
+          echo "===== Bat dau pip install ====="
+          pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: python wow_to_gsheet.py
