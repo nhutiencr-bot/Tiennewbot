@@ -12,23 +12,12 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Debug - list files
-        run: |
-          echo "Thư mục hiện tại:"
-          pwd
-          echo "Danh sách file:"
-          ls -la
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run script
-        env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-        run: python wow_to_gsheet.py
+      - name: Debug and install dependencies
+        run: |
+          echo "===== Thư mục hiện tại ====="
+          pwd
