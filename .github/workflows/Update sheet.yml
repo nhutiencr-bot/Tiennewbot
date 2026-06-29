@@ -19,5 +19,17 @@ jobs:
 
       - name: Debug and install dependencies
         run: |
-          echo "===== Thư mục hiện tại ====="
+          echo "===== Thu muc hien tai ====="
           pwd
+          echo "===== Danh sach toan bo file ====="
+          ls -la
+          echo "===== Tim file requirements.txt o moi noi ====="
+          find . -iname "requirements.txt"
+          echo "===== Bat dau pip install ====="
+          pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: python wow_to_gsheet.py
