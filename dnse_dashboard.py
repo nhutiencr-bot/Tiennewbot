@@ -4,12 +4,11 @@ DNSE Account Dashboard - Streamlit
 - Cache dữ liệu để load nhanh
 - Tabs: Tiểu khoản | Vị thế | Số dư | Lịch sử lệnh | P&L | Bot điểm mua
 - Font đẹp: Inter + Vietnamese friendly
+- Authenticate: Chỉ sử dụng API Key
 """
 
 import streamlit as st
 import httpx
-import hmac
-import hashlib
 import time
 import json
 import pandas as pd
@@ -228,35 +227,22 @@ html, body, [class*="css"] {
 # DNSE API CLIENT
 # ─────────────────────────────────────────────
 BASE_URL = "https://openapi.dnse.com.vn"
-TIMEOUT = httpx.Timeout(15.0, connect=10.0)  # giảm timeout, fail nhanh hơn
+TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 
-def _sign(api_secret: str, method: str, path: str, body: str = "") -> dict:
-    """Tạo HMAC-SHA256 signature cho DNSE OpenAPI."""
-    ts = str(int(time.time() * 1000))
-    payload = f"{method.upper()}\n{path}\n{ts}\n{body}"
-    sig = hmac.new(
-        api_secret.encode("utf-8"),
-        payload.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    return {"timestamp": ts, "signature": sig}
-
-
-def _headers(api_key: str, api_secret: str, method: str, path: str, body: str = "") -> dict:
-    signed = _sign(api_secret, method, path, body)
+def _headers(api_key: str) -> dict:
+    """Chỉ sử dụng API Key cho Auth"""
     return {
+        "Authorization": f"Bearer {api_key}",
         "X-API-Key": api_key,
-        "X-Timestamp": signed["timestamp"],
-        "X-Signature": signed["signature"],
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
 
 
-def _get(api_key: str, api_secret: str, path: str, params: dict = None) -> dict | list | None:
+def _get(api_key: str, path: str, params: dict = None) -> dict | list | None:
     """Sync GET với retry 2 lần và timeout ngắn."""
     url = BASE_URL + path
-    headers = _headers(api_key, api_secret, "GET", path)
+    headers = _headers(api_key)
     for attempt in range(3):
         try:
             with httpx.Client(timeout=TIMEOUT, verify=True) as client:
@@ -283,19 +269,18 @@ def _get(api_key: str, api_secret: str, path: str, params: dict = None) -> dict 
 # CACHED API CALLS
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=60, show_spinner=False)
-def get_accounts(api_key: str, api_secret: str):
-    data = _get(api_key, api_secret, "/accounts")
+def get_accounts(api_key: str):
+    data = _get(api_key, "/accounts")
     if data is None:
         return []
-    # API trả về {"accounts": [...]} hoặc list trực tiếp
     if isinstance(data, dict):
         return data.get("accounts", data.get("data", []))
     return data if isinstance(data, list) else []
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def get_positions(api_key: str, api_secret: str, account_no: str, market_type: str = "STOCK"):
-    data = _get(api_key, api_secret, f"/accounts/{account_no}/positions", {"marketType": market_type})
+def get_positions(api_key: str, account_no: str, market_type: str = "STOCK"):
+    data = _get(api_key, f"/accounts/{account_no}/positions", {"marketType": market_type})
     if data is None:
         return []
     if isinstance(data, dict):
@@ -304,15 +289,15 @@ def get_positions(api_key: str, api_secret: str, account_no: str, market_type: s
 
 
 @st.cache_data(ttl=30, show_spinner=False)
-def get_balances(api_key: str, api_secret: str, account_no: str):
-    data = _get(api_key, api_secret, f"/accounts/{account_no}/balances")
+def get_balances(api_key: str, account_no: str):
+    data = _get(api_key, f"/accounts/{account_no}/balances")
     return data if isinstance(data, dict) else {}
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def get_orders(api_key: str, api_secret: str, account_no: str, market_type: str = "STOCK", category: str = "NORMAL"):
+def get_orders(api_key: str, account_no: str, market_type: str = "STOCK", category: str = "NORMAL"):
     data = _get(
-        api_key, api_secret,
+        api_key,
         f"/accounts/{account_no}/orders",
         {"marketType": market_type, "orderCategory": category},
     )
@@ -324,10 +309,9 @@ def get_orders(api_key: str, api_secret: str, account_no: str, market_type: str 
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_order_history(api_key: str, api_secret: str, account_no: str, from_date: str, to_date: str):
-    """Lịch sử lệnh theo ngày."""
+def get_order_history(api_key: str, account_no: str, from_date: str, to_date: str):
     data = _get(
-        api_key, api_secret,
+        api_key,
         f"/accounts/{account_no}/order-history",
         {"marketType": "STOCK", "fromDate": from_date, "toDate": to_date},
     )
@@ -384,17 +368,9 @@ def color_pnl(val):
 
 
 # ─────────────────────────────────────────────
-# BOT ĐIỂM MUA - Cô Tiên Logic (Kijun17/Knife65)
+# BOT ĐIỂM MUA - Cô Tiên Logic
 # ─────────────────────────────────────────────
 def compute_signals(prices: list[float], volumes: list[float] = None) -> dict:
-    """
-    Tính tín hiệu mua/bán theo hệ thống Cô Tiên:
-    - Kijun17 = EMA(17)
-    - Knife65 = EMA(65)
-    - Knife129 = EMA(129)
-    - RSI14
-    - Volume/MA20 ratio
-    """
     if len(prices) < 20:
         return {"signal": "KHÔNG ĐỦ DỮ LIỆU", "score": 0, "details": []}
 
@@ -432,7 +408,6 @@ def compute_signals(prices: list[float], volumes: list[float] = None) -> dict:
     score  = 0
     details = []
 
-    # Điều kiện 1: Giá > Kijun17
     if price > kijun17:
         score += 2
         details.append(("✅", f"Giá ({price:,.0f}) > Kijun17 ({kijun17:,.0f})"))
@@ -440,7 +415,6 @@ def compute_signals(prices: list[float], volumes: list[float] = None) -> dict:
         score -= 1
         details.append(("⬇️", f"Giá ({price:,.0f}) < Kijun17 ({kijun17:,.0f})"))
 
-    # Điều kiện 2: Kijun17 > Knife65
     if kijun17 > knife65:
         score += 2
         details.append(("✅", f"Kijun17 ({kijun17:,.0f}) > Knife65 ({knife65:,.0f})"))
@@ -448,14 +422,12 @@ def compute_signals(prices: list[float], volumes: list[float] = None) -> dict:
         score -= 1
         details.append(("⬇️", f"Kijun17 ({kijun17:,.0f}) < Knife65 ({knife65:,.0f})"))
 
-    # Điều kiện 3: Knife65 > Knife129
     if knife65 > knife129:
         score += 1
         details.append(("✅", f"Knife65 ({knife65:,.0f}) > Knife129 ({knife129:,.0f})"))
     else:
         details.append(("⚠️", f"Knife65 ({knife65:,.0f}) < Knife129 ({knife129:,.0f})"))
 
-    # Điều kiện 4: RSI14
     if 40 <= rsi14 <= 70:
         score += 1
         details.append(("✅", f"RSI14 = {rsi14:.1f} (vùng lý tưởng 40–70)"))
@@ -465,7 +437,6 @@ def compute_signals(prices: list[float], volumes: list[float] = None) -> dict:
     else:
         details.append(("⚠️", f"RSI14 = {rsi14:.1f} (cần theo dõi)"))
 
-    # Điều kiện 5: Volume
     if vol_ratio >= 1.5:
         score += 2
         details.append(("✅", f"Volume/MA20 = {vol_ratio:.1f}x (đột biến khối lượng)"))
@@ -507,13 +478,11 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    api_key    = st.text_input("API Key", type="password", placeholder="your-api-key")
-    api_secret = st.text_input("API Secret", type="password", placeholder="your-api-secret")
+    api_key = st.text_input("API Key (Token)", type="password", placeholder="Nhập API Key hoặc Token của bạn")
 
     st.divider()
     st.markdown("<span style='color:#64748b;font-size:0.75rem'>📡 DNSE OpenAPI v2026</span>", unsafe_allow_html=True)
 
-    # Nút clear cache
     if st.button("🔄 Làm mới dữ liệu"):
         st.cache_data.clear()
         st.rerun()
@@ -554,8 +523,8 @@ st.markdown(f"""
 # ─────────────────────────────────────────────
 # GUARD: cần API key
 # ─────────────────────────────────────────────
-if not api_key or not api_secret:
-    st.info("👈 Nhập **API Key** và **API Secret** ở sidebar để bắt đầu.")
+if not api_key:
+    st.info("👈 Nhập **API Key (Token)** ở sidebar để bắt đầu.")
     st.stop()
 
 
@@ -563,15 +532,15 @@ if not api_key or not api_secret:
 # LOAD ACCOUNTS
 # ─────────────────────────────────────────────
 with st.spinner("Đang tải danh sách tài khoản..."):
-    accounts = get_accounts(api_key, api_secret)
+    accounts = get_accounts(api_key)
 
 if not accounts:
-    st.error("Không lấy được danh sách tài khoản. Kiểm tra API Key/Secret.")
+    st.error("Không lấy được danh sách tài khoản. Kiểm tra lại API Key.")
     st.stop()
 
-# Tự động chọn tài khoản đầu tiên (bạn chỉ có 1)
+# Tự động chọn tài khoản đầu tiên
 acct_ids = [a.get("id", a.get("accountNo", str(a))) if isinstance(a, dict) else str(a) for a in accounts]
-selected_acct = acct_ids[0]  # auto-select vì chỉ có 1 tài khoản
+selected_acct = acct_ids[0]
 
 if len(acct_ids) > 1:
     selected_acct = st.sidebar.selectbox("Tiểu khoản", acct_ids)
@@ -590,10 +559,10 @@ st.sidebar.markdown(f"""
 col_spin1, col_spin2 = st.columns(2)
 with col_spin1:
     with st.spinner("Tải vị thế..."):
-        positions = get_positions(api_key, api_secret, selected_acct)
+        positions = get_positions(api_key, selected_acct)
 with col_spin2:
     with st.spinner("Tải số dư..."):
-        balances = get_balances(api_key, api_secret, selected_acct)
+        balances = get_balances(api_key, selected_acct)
 
 
 # ─────────────────────────────────────────────
@@ -672,7 +641,6 @@ with tab1:
     if pnl_df.empty:
         st.info("Không có vị thế nào đang nắm giữ.")
     else:
-        # Bảng P&L có màu
         styled = pnl_df.style.format({
             "Giá vốn":      fmt_vnd,
             "Giá hiện tại": fmt_vnd,
@@ -683,7 +651,6 @@ with tab1:
 
         st.dataframe(styled, use_container_width=True, height=300)
 
-        # Biểu đồ P&L waterfall
         fig = go.Figure(go.Bar(
             x=pnl_df["Mã CP"],
             y=pnl_df["P&L (VNĐ)"],
@@ -703,7 +670,6 @@ with tab1:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # Pie chart phân bổ danh mục
         col_a, col_b = st.columns(2)
         with col_a:
             fig2 = px.pie(
@@ -750,7 +716,6 @@ with tab2:
     if not balances:
         st.info("Không có dữ liệu số dư.")
     else:
-        # Hiển thị tất cả fields từ API
         rows = []
         field_labels = {
             "cash": "Tiền mặt",
@@ -781,7 +746,6 @@ with tab2:
             df_bal = pd.DataFrame(rows)
             st.dataframe(df_bal[["Chỉ tiêu", "Giá trị"]], use_container_width=True, hide_index=True)
 
-        # Gauge sức mua
         if buy_power > 0 and net_asset > 0:
             usage_pct = min((net_asset - buy_power) / net_asset * 100, 100)
             fig_g = go.Figure(go.Indicator(
@@ -812,13 +776,12 @@ with tab2:
 # ══════════════════════════════════════════════
 with tab3:
     with st.spinner("Tải lệnh đang chờ..."):
-        orders = get_orders(api_key, api_secret, selected_acct)
+        orders = get_orders(api_key, selected_acct)
 
     if not orders:
         st.info("Không có lệnh đang chờ khớp.")
     else:
         df_ord = pd.DataFrame(orders)
-        # Chuẩn hóa tên cột phổ biến
         rename_map = {
             "symbol": "Mã CP", "secSymbol": "Mã CP",
             "side": "Chiều", "orderSide": "Chiều",
@@ -847,7 +810,7 @@ with tab4:
     if st.button("📥 Tải lịch sử lệnh"):
         with st.spinner("Đang tải lịch sử..."):
             hist = get_order_history(
-                api_key, api_secret, selected_acct,
+                api_key, selected_acct,
                 from_date.strftime("%Y-%m-%d"),
                 to_date.strftime("%Y-%m-%d"),
             )
@@ -868,7 +831,6 @@ with tab4:
             display_h = [c for c in ["Ngày GD", "Mã CP", "Chiều", "KL đặt", "KL khớp", "Giá đặt", "Giá khớp", "Giá trị khớp", "Trạng thái"] if c in df_h.columns]
             st.dataframe(df_h[display_h] if display_h else df_h, use_container_width=True, hide_index=True)
 
-            # Thống kê nhanh
             if "Mã CP" in df_h.columns and "Giá trị khớp" in df_h.columns:
                 try:
                     df_h["Giá trị khớp"] = pd.to_numeric(df_h["Giá trị khớp"], errors="coerce")
@@ -899,7 +861,6 @@ with tab5:
     </div>
     """, unsafe_allow_html=True)
 
-    # Lấy danh sách mã từ vị thế hoặc nhập tay
     position_symbols = []
     if pnl_df is not None and not pnl_df.empty:
         position_symbols = pnl_df["Mã CP"].tolist()
@@ -923,7 +884,6 @@ with tab5:
         else:
             results = []
             for sym in symbols:
-                # Sinh giá mô phỏng (random walk) — thay bằng API giá thực tế nếu có
                 np.random.seed(hash(sym) % 10000)
                 base = np.random.uniform(10000, 80000)
                 returns = np.random.normal(0.0005, 0.015, sim_days)
@@ -935,10 +895,8 @@ with tab5:
                 sig["prices"] = prices_sim
                 results.append(sig)
 
-            # Sắp xếp theo score
             results.sort(key=lambda x: x["score"], reverse=True)
 
-            # Hiển thị kết quả
             for r in results:
                 signal_html = f"<span class='signal-buy'>{r['signal']}</span>" if "MUA" in r["signal"] \
                     else (f"<span class='signal-sell'>{r['signal']}</span>" if "BÁN" in r["signal"] \
@@ -970,12 +928,10 @@ with tab5:
                         </div>
                         """, unsafe_allow_html=True)
 
-                        # Chi tiết điều kiện
                         for icon, detail in r["details"]:
                             st.markdown(f"<div style='font-size:0.78rem;color:#94a3b8;padding:2px 0'>{icon} {detail}</div>", unsafe_allow_html=True)
 
                     with col_s2:
-                        # Chart giá + đường MA
                         prices_arr = r["prices"]
                         x_idx = list(range(len(prices_arr)))
 
@@ -1016,7 +972,6 @@ with tab5:
                         )
                         st.plotly_chart(fig_c, use_container_width=True)
 
-            # Bảng tóm tắt tất cả mã
             st.markdown("### 📋 Bảng xếp hạng tín hiệu")
             summary_rows = [{
                 "Mã CP": r["symbol"],
