@@ -1,376 +1,381 @@
 """
-DNSE Account Dashboard
-Xem thông tin tài khoản và vị thế nắm giữ qua DNSE OpenAPI
+DNSE Account Dashboard  ·  Cô Tiên 🧚
+Xem thông tin tài khoản & vị thế nắm giữ qua DNSE OpenAPI
 """
 import json
 import streamlit as st
 import pandas as pd
 from dnse.api.client import DNSEClient
 
-# ── Page config ──────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Page config
+# ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="DNSE Dashboard",
-    page_icon="📈",
+    page_title="DNSE Dashboard · Cô Tiên",
+    page_icon="🧚",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS ────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# CSS
+# ─────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .metric-card {
-        background: #1e2130;
-        border-radius: 10px;
-        padding: 16px 20px;
-        border-left: 4px solid #00d4aa;
-        margin-bottom: 8px;
-    }
-    .metric-label { color: #8892a4; font-size: 13px; margin-bottom: 4px; }
-    .metric-value { color: #ffffff; font-size: 22px; font-weight: 700; }
-    .positive { color: #00d4aa !important; }
-    .negative { color: #ff5252 !important; }
+    /* Sidebar */
+    [data-testid="stSidebar"] { background: #131722; }
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 { color: #00d4aa; }
+
+    /* Positive / Negative */
+    .pos { color: #00d4aa; font-weight: 700; }
+    .neg { color: #ff5252; font-weight: 700; }
+
+    /* Table tweaks */
+    .stDataFrame thead th { background: #1e2130 !important; }
     .stDataFrame { font-size: 13px; }
-    div[data-testid="stSidebar"] { background: #131722; }
-    .sidebar-title { color: #00d4aa; font-weight: 700; font-size: 18px; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Sidebar: Credentials ──────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Sidebar – Credentials
+# ─────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown('<div class="sidebar-title">🔐 DNSE API Credentials</div>', unsafe_allow_html=True)
-    st.markdown("---")
+    st.title("🧚 DNSE Dashboard")
+    st.caption("by Cô Tiên")
+    st.divider()
+
+    st.subheader("🔐 API Credentials")
+
+    # Streamlit Secrets support (for Cloud deploy)
+    _secrets = st.secrets if hasattr(st, "secrets") else {}
+    default_key    = _secrets.get("DNSE_API_KEY", "")
+    default_secret = _secrets.get("DNSE_API_SECRET", "")
+    default_ver    = _secrets.get("DNSE_API_VERSION", "2026-07-23")
 
     api_key = st.text_input(
-        "API Key (X-API-Key)",
+        "API Key",
+        value=default_key,
         type="password",
         placeholder="eyJvcmciOiJkbnNlIiwi...",
-        help="API Key được cấp từ DNSE Developer Portal",
+        help="Lấy từ DNSE Developer Portal",
     )
     api_secret = st.text_input(
         "API Secret",
+        value=default_secret,
         type="password",
-        placeholder="Nhập API Secret của bạn",
-        help="Secret dùng để ký HMAC-SHA256",
+        placeholder="Secret HMAC-SHA256",
     )
+    api_version = st.text_input("API Version", value=default_ver)
 
-    st.markdown("---")
-    st.markdown("**API Version**")
-    api_version = st.text_input("Version (YYYY-MM-DD)", value="2026-07-23")
+    st.divider()
+    st.caption("🔒 Credentials chỉ tồn tại trong session này.")
+    st.caption("📖 [DNSE API Docs](https://developers.dnse.com.vn/docs/dnse/account)")
 
-    st.markdown("---")
-    st.caption("🔒 Credentials chỉ lưu trong session, không được ghi ra bất kỳ đâu.")
-    st.caption("📖 [Tài liệu DNSE API](https://developers.dnse.com.vn/docs/dnse/account)")
-
-# ── Helper: build client ──────────────────────────────────────
-def get_client():
-    if not api_key or not api_secret:
-        return None
+# ─────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────
+@st.cache_resource(show_spinner=False)
+def make_client(key, secret, version):
     return DNSEClient(
-        api_key=api_key,
-        api_secret=api_secret,
+        api_key=key,
+        api_secret=secret,
         base_url="https://openapi.dnse.com.vn",
-        api_version=api_version or "2026-07-23",
+        api_version=version or "2026-07-23",
     )
 
 
-def safe_call(fn, *args, **kwargs):
-    """Gọi API và trả về (status, data_dict | None, error_msg | None)"""
+def api_call(fn, *args, **kwargs):
+    """Gọi API → (data | None, error_str | None)"""
     try:
         status, body = fn(*args, **kwargs)
-        if body:
-            data = json.loads(body)
-        else:
-            data = {}
+        data = json.loads(body) if body else {}
         if status and status >= 400:
-            return status, None, data.get("message") or body
-        return status, data, None
-    except Exception as e:
-        return None, None, str(e)
+            msg = data.get("message") or data.get("error") or body or f"HTTP {status}"
+            return None, f"[{status}] {msg}"
+        return data, None
+    except Exception as exc:
+        return None, str(exc)
 
 
-def fmt_money(val, unit=1000):
-    """Format số tiền VND"""
-    if val is None:
+def _float(v, default=0.0):
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
+def fmt_vnd(v):
+    try:
+        return f"{float(v):,.0f}"
+    except Exception:
         return "—"
-    try:
-        v = float(val) * unit
-        if abs(v) >= 1e9:
-            return f"{v/1e9:,.2f} tỷ"
-        if abs(v) >= 1e6:
-            return f"{v/1e6:,.0f} tr"
-        return f"{v:,.0f}"
-    except Exception:
-        return str(val)
 
 
-def pnl_color(val):
-    """CSS class theo lãi/lỗ"""
-    try:
-        return "positive" if float(val) >= 0 else "negative"
-    except Exception:
-        return ""
+def pnl_html(val):
+    v = _float(val)
+    cls = "pos" if v >= 0 else "neg"
+    sign = "+" if v >= 0 else ""
+    return f'<span class="{cls}">{sign}{v:,.0f}</span>'
 
 
-# ── Main UI ───────────────────────────────────────────────────
+def pct_html(val):
+    v = _float(val)
+    cls = "pos" if v >= 0 else "neg"
+    sign = "+" if v >= 0 else ""
+    return f'<span class="{cls}">{sign}{v:.2f}%</span>'
+
+
+# ─────────────────────────────────────────────────────────────
+# Auth guard
+# ─────────────────────────────────────────────────────────────
 st.title("📈 DNSE Account Dashboard")
 
 if not api_key or not api_secret:
-    st.info("👈 Nhập **API Key** và **API Secret** trong thanh bên trái để bắt đầu.")
+    st.info("👈 Nhập **API Key** và **API Secret** trong sidebar để bắt đầu.")
     st.stop()
 
-client = get_client()
+client = make_client(api_key, api_secret, api_version)
 
-# ── Tabs ──────────────────────────────────────────────────────
-tab_accounts, tab_positions, tab_balances = st.tabs(
-    ["🏦 Tài khoản", "📊 Vị thế nắm giữ", "💰 Số dư tài khoản"]
+# ─────────────────────────────────────────────────────────────
+# Tabs
+# ─────────────────────────────────────────────────────────────
+t_acc, t_pos, t_bal = st.tabs(
+    ["🏦 Tiểu khoản", "📊 Vị thế nắm giữ", "💰 Số dư"]
 )
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TAB 1: Danh sách tài khoản
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-with tab_accounts:
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 1 – Danh sách tiểu khoản
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+with t_acc:
     st.subheader("Danh sách tiểu khoản")
-    if st.button("🔄 Tải danh sách tài khoản", key="load_accounts"):
-        with st.spinner("Đang lấy dữ liệu..."):
-            status, data, err = safe_call(client.get_accounts)
 
+    if st.button("🔄 Tải danh sách", key="btn_accounts"):
+        with st.spinner("Đang kết nối DNSE..."):
+            data, err = api_call(client.get_accounts)
         if err:
-            st.error(f"❌ Lỗi {status}: {err}")
-        elif data:
-            accounts = data if isinstance(data, list) else data.get("accounts", [data])
-            st.session_state["accounts"] = accounts
-            st.success(f"✅ Tìm thấy **{len(accounts)}** tiểu khoản")
+            st.error(f"❌ {err}")
+        else:
+            accs = data if isinstance(data, list) else data.get("accounts", [data])
+            st.session_state["accounts"] = accs
+            # Cache account numbers
+            nos = []
+            for a in accs:
+                no = a.get("accountNo") or a.get("id") or a.get("subAccountId")
+                if no:
+                    nos.append(str(no))
+            st.session_state["account_nos"] = nos
+            st.success(f"✅ Tìm thấy **{len(accs)}** tiểu khoản")
 
-    accounts = st.session_state.get("accounts", [])
-    if accounts:
+    accs = st.session_state.get("accounts", [])
+    if accs:
         rows = []
-        for acc in accounts:
+        for a in accs:
             rows.append({
-                "Số tiểu khoản": acc.get("accountNo") or acc.get("id") or acc.get("subAccountId", "—"),
-                "Tên": acc.get("name") or acc.get("accountName", "—"),
-                "Loại": acc.get("type") or acc.get("accountType", "—"),
-                "Trạng thái": acc.get("status", "—"),
+                "Số tiểu khoản": a.get("accountNo") or a.get("id") or a.get("subAccountId", "—"),
+                "Tên tài khoản": a.get("name") or a.get("accountName", "—"),
+                "Loại":          a.get("type") or a.get("accountType", "—"),
+                "Trạng thái":    a.get("status", "—"),
             })
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-        # Lưu account_no để dùng ở tab khác
-        account_nos = [r["Số tiểu khoản"] for r in rows if r["Số tiểu khoản"] != "—"]
-        if account_nos:
-            st.session_state["account_nos"] = account_nos
-
-        with st.expander("Raw JSON"):
-            st.json(accounts)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        with st.expander("📋 Raw JSON"):
+            st.json(accs)
     else:
-        st.caption("Nhấn nút **Tải danh sách tài khoản** để xem dữ liệu.")
+        st.caption("Nhấn **Tải danh sách** để xem.")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TAB 2: Vị thế nắm giữ
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-with tab_positions:
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 2 – Vị thế nắm giữ
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+with t_pos:
     st.subheader("Vị thế nắm giữ")
 
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
-        account_nos = st.session_state.get("account_nos", [])
-        if account_nos:
-            account_no = st.selectbox("Chọn tiểu khoản", account_nos, key="pos_account")
+    nos = st.session_state.get("account_nos", [])
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        if nos:
+            pos_acc = st.selectbox("Tiểu khoản", nos, key="pos_acc")
         else:
-            account_no = st.text_input(
-                "Số tiểu khoản",
-                placeholder="0001179019",
-                help="Nhập số tiểu khoản hoặc tải danh sách ở tab Tài khoản trước",
-                key="pos_account_manual",
-            )
-    with col2:
-        market_type = st.selectbox(
-            "Loại thị trường",
-            ["STOCK", "DERIVATIVE"],
-            key="pos_market",
-        )
-    with col3:
-        page_size = st.number_input("Page size", min_value=1, max_value=100, value=20, key="pos_page")
+            pos_acc = st.text_input("Số tiểu khoản", placeholder="0001179019", key="pos_acc_txt")
+    with c2:
+        mkt = st.selectbox("Thị trường", ["STOCK", "DERIVATIVE"], key="pos_mkt")
 
-    if st.button("🔄 Tải vị thế", key="load_positions", type="primary"):
-        acc = account_no if isinstance(account_no, str) else str(account_no)
+    if st.button("🔄 Tải vị thế", key="btn_positions", type="primary"):
+        acc = str(pos_acc).strip() if pos_acc else ""
         if not acc:
             st.warning("⚠️ Vui lòng nhập số tiểu khoản.")
         else:
             with st.spinner("Đang lấy vị thế..."):
-                status, data, err = safe_call(
-                    client.get_positions, acc, market_type
-                )
+                data, err = api_call(client.get_positions, acc, mkt)
             if err:
-                st.error(f"❌ Lỗi {status}: {err}")
+                st.error(f"❌ {err}")
             else:
-                st.session_state["positions_data"] = data
-                st.session_state["positions_market"] = market_type
+                st.session_state["pos_data"] = data
+                st.session_state["pos_mkt_label"] = mkt
 
-    # Render positions
-    data = st.session_state.get("positions_data")
-    if data:
-        positions = data.get("positions", [])
-        market = st.session_state.get("positions_market", "STOCK")
+    pos_data = st.session_state.get("pos_data")
+    if pos_data is not None:
+        positions = pos_data.get("positions", [])
+        cur_mkt = st.session_state.get("pos_mkt_label", "STOCK")
 
-        # KPI row
+        # ── KPI strip
         if positions:
-            total_market_val = sum(
-                float(p.get("marketValue") or p.get("mktValue") or 0) for p in positions
-            )
+            total_mkt  = sum(_float(p.get("marketValue") or p.get("mktValue") or 0) for p in positions)
             total_cost = sum(
-                float(p.get("costValue") or p.get("avgPrice", 0)) * float(p.get("quantity") or p.get("qty") or 0)
+                _float(p.get("costValue") or 0) or
+                (_float(p.get("averagePrice") or p.get("avgPrice") or 0) * _float(p.get("quantity") or p.get("qty") or 0))
                 for p in positions
             )
-            total_pnl = sum(
-                float(p.get("unrealizedPnL") or p.get("unrealizedPnl") or p.get("pnl") or 0)
-                for p in positions
+            total_pnl  = sum(_float(p.get("unrealizedPnL") or p.get("unrealizedPnl") or p.get("pnl") or 0) for p in positions)
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Số mã", len(positions))
+            k2.metric("Giá trị TT", fmt_vnd(total_mkt))
+            k3.metric("Tổng vốn", fmt_vnd(total_cost))
+            delta_color = "normal" if total_pnl >= 0 else "inverse"
+            k4.metric(
+                "Lãi/Lỗ chưa TH",
+                fmt_vnd(total_pnl),
+                delta=f"{total_pnl/total_cost*100:+.2f}%" if total_cost else None,
+                delta_color=delta_color,
             )
+            st.divider()
 
-            kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-            kpi1.metric("Số mã nắm giữ", len(positions))
-            kpi2.metric("Tổng giá trị TT", f"{total_market_val:,.0f}")
-            kpi3.metric("Tổng vốn", f"{total_cost:,.0f}")
-            pnl_sign = "+" if total_pnl >= 0 else ""
-            kpi4.metric("Lãi/Lỗ chưa thực hiện", f"{pnl_sign}{total_pnl:,.0f}")
-
-            st.markdown("---")
-
+        # ── Table
         if positions:
-            # Build table với STOCK fields
-            if market == "STOCK":
+            if cur_mkt == "STOCK":
                 rows = []
                 for p in positions:
-                    symbol = p.get("symbol") or p.get("instrumentId", "—")
-                    qty = p.get("quantity") or p.get("qty") or 0
-                    avail = p.get("availableQuantity") or p.get("availQty") or qty
-                    avg = p.get("averagePrice") or p.get("avgPrice") or 0
-                    mkt = p.get("currentPrice") or p.get("marketPrice") or p.get("closePrice") or 0
-                    cost_val = p.get("costValue") or (float(qty) * float(avg) if qty and avg else 0)
-                    mkt_val = p.get("marketValue") or p.get("mktValue") or (float(qty) * float(mkt) if qty and mkt else 0)
-                    pnl = p.get("unrealizedPnL") or p.get("unrealizedPnl") or p.get("pnl") or 0
-                    pnl_pct = p.get("unrealizedPnLPct") or p.get("pnlPct") or (
-                        (float(pnl) / float(cost_val) * 100) if cost_val and float(cost_val) != 0 else 0
+                    sym    = p.get("symbol") or p.get("instrumentId", "—")
+                    qty    = _float(p.get("quantity") or p.get("qty") or 0)
+                    avail  = _float(p.get("availableQuantity") or p.get("availQty") or qty)
+                    avg    = _float(p.get("averagePrice") or p.get("avgPrice") or 0)
+                    mktpx  = _float(p.get("currentPrice") or p.get("marketPrice") or p.get("closePrice") or 0)
+                    cost_v = _float(p.get("costValue") or 0) or qty * avg
+                    mkt_v  = _float(p.get("marketValue") or p.get("mktValue") or 0) or qty * mktpx
+                    pnl    = _float(p.get("unrealizedPnL") or p.get("unrealizedPnl") or p.get("pnl") or 0)
+                    pnl_p  = _float(p.get("unrealizedPnLPct") or p.get("pnlPct") or 0) or (
+                        (pnl / cost_v * 100) if cost_v else 0
                     )
                     rows.append({
-                        "Mã CK": symbol,
-                        "KL sở hữu": int(float(qty)) if qty else 0,
-                        "KL khả dụng": int(float(avail)) if avail else 0,
-                        "Giá vốn": round(float(avg), 2) if avg else 0,
-                        "Giá TT": round(float(mkt), 2) if mkt else 0,
-                        "Giá trị vốn": round(float(cost_val), 0) if cost_val else 0,
-                        "Giá trị TT": round(float(mkt_val), 0) if mkt_val else 0,
-                        "Lãi/Lỗ": round(float(pnl), 0) if pnl else 0,
-                        "%": round(float(pnl_pct), 2) if pnl_pct else 0,
+                        "Mã CK":         sym,
+                        "KL sở hữu":     int(qty),
+                        "KL khả dụng":   int(avail),
+                        "Giá vốn":       round(avg, 2),
+                        "Giá TT":        round(mktpx, 2),
+                        "Giá trị vốn":   round(cost_v, 0),
+                        "Giá trị TT":    round(mkt_v, 0),
+                        "Lãi/Lỗ":        round(pnl, 0),
+                        "%":             round(pnl_p, 2),
                     })
 
                 df = pd.DataFrame(rows)
 
-                # Color formatting
-                def highlight_pnl(row):
+                def _style_pnl(row):
                     styles = [""] * len(row)
-                    idx = df.columns.get_loc("Lãi/Lỗ")
-                    val = row["Lãi/Lỗ"]
-                    color = "color: #00d4aa" if val >= 0 else "color: #ff5252"
-                    styles[idx] = color
-                    idx2 = df.columns.get_loc("%")
-                    styles[idx2] = color
+                    for col in ("Lãi/Lỗ", "%"):
+                        if col in df.columns:
+                            idx = df.columns.get_loc(col)
+                            styles[idx] = "color:#00d4aa;font-weight:700" if row[col] >= 0 else "color:#ff5252;font-weight:700"
                     return styles
 
-                styled = df.style.apply(highlight_pnl, axis=1).format({
-                    "Giá vốn": "{:,.2f}",
-                    "Giá TT": "{:,.2f}",
-                    "Giá trị vốn": "{:,.0f}",
-                    "Giá trị TT": "{:,.0f}",
-                    "Lãi/Lỗ": "{:+,.0f}",
-                    "%": "{:+.2f}%",
-                })
+                styled = (
+                    df.style
+                    .apply(_style_pnl, axis=1)
+                    .format({
+                        "Giá vốn":     "{:,.2f}",
+                        "Giá TT":      "{:,.2f}",
+                        "Giá trị vốn": "{:,.0f}",
+                        "Giá trị TT":  "{:,.0f}",
+                        "Lãi/Lỗ":      "{:+,.0f}",
+                        "%":           "{:+.2f}%",
+                    })
+                )
                 st.dataframe(styled, use_container_width=True, hide_index=True)
 
             else:
-                # DERIVATIVE — hiển thị raw vì field khác nhau tùy version
+                # DERIVATIVE – raw normalize
                 st.dataframe(pd.json_normalize(positions), use_container_width=True, hide_index=True)
 
-            # Phân trang info (phái sinh)
-            if market == "DERIVATIVE":
-                meta_cols = st.columns(4)
-                meta_cols[0].metric("pageIndex", data.get("pageIndex", 0))
-                meta_cols[1].metric("pageSize", data.get("pageSize", 20))
-                meta_cols[2].metric("pageNumber", data.get("pageNumber", 1))
-                meta_cols[3].metric("Tổng", data.get("total", len(positions)))
+                # Pagination meta
+                if any(k in pos_data for k in ("pageIndex", "pageSize", "total")):
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("pageIndex",  pos_data.get("pageIndex", 0))
+                    m2.metric("pageSize",   pos_data.get("pageSize", 20))
+                    m3.metric("pageNumber", pos_data.get("pageNumber", 1))
+                    m4.metric("Tổng",       pos_data.get("total", len(positions)))
 
         else:
             st.info("📭 Không có vị thế nào trong tài khoản này.")
 
-        with st.expander("Raw JSON"):
-            st.json(data)
+        with st.expander("📋 Raw JSON"):
+            st.json(pos_data)
+
     else:
-        st.caption("Chọn tiểu khoản và nhấn **Tải vị thế** để xem.")
+        st.caption("Chọn tiểu khoản → nhấn **Tải vị thế**.")
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# TAB 3: Số dư tài khoản
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-with tab_balances:
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 3 – Số dư
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+with t_bal:
     st.subheader("Số dư tài khoản")
 
-    account_nos = st.session_state.get("account_nos", [])
-    if account_nos:
-        bal_account = st.selectbox("Chọn tiểu khoản", account_nos, key="bal_account")
+    nos = st.session_state.get("account_nos", [])
+    if nos:
+        bal_acc = st.selectbox("Tiểu khoản", nos, key="bal_acc")
     else:
-        bal_account = st.text_input(
-            "Số tiểu khoản",
-            placeholder="0001179019",
-            key="bal_account_manual",
-        )
+        bal_acc = st.text_input("Số tiểu khoản", placeholder="0001179019", key="bal_acc_txt")
 
-    if st.button("🔄 Tải số dư", key="load_balances", type="primary"):
-        acc = bal_account if isinstance(bal_account, str) else str(bal_account)
+    if st.button("🔄 Tải số dư", key="btn_balances", type="primary"):
+        acc = str(bal_acc).strip() if bal_acc else ""
         if not acc:
             st.warning("⚠️ Vui lòng nhập số tiểu khoản.")
         else:
             with st.spinner("Đang lấy số dư..."):
-                status, data, err = safe_call(client.get_balances, acc)
+                data, err = api_call(client.get_balances, acc)
             if err:
-                st.error(f"❌ Lỗi {status}: {err}")
+                st.error(f"❌ {err}")
             else:
-                st.session_state["balances_data"] = data
+                st.session_state["bal_data"] = data
 
-    data = st.session_state.get("balances_data")
-    if data:
-        # Hiển thị các field phổ biến
-        field_map = {
-            "cash": "Tiền mặt",
-            "availableCash": "Tiền khả dụng",
-            "equity": "Tổng tài sản ròng",
-            "totalAsset": "Tổng tài sản",
-            "stockValue": "Giá trị chứng khoán",
-            "debtValue": "Giá trị nợ",
-            "marginRate": "Tỷ lệ ký quỹ (%)",
-            "buyingPower": "Sức mua",
+    bal_data = st.session_state.get("bal_data")
+    if bal_data:
+        FIELD_MAP = {
+            "cash":           "Tiền mặt",
+            "availableCash":  "Tiền khả dụng",
+            "equity":         "Tổng tài sản ròng",
+            "totalAsset":     "Tổng tài sản",
+            "stockValue":     "Giá trị chứng khoán",
+            "debtValue":      "Giá trị nợ",
+            "buyingPower":    "Sức mua",
+            "marginRate":     "Tỷ lệ ký quỹ (%)",
+            "withdrawable":   "Tiền rút được",
         }
+        items = {label: bal_data[k] for k, label in FIELD_MAP.items() if k in bal_data}
 
-        display = {}
-        flat = data if isinstance(data, dict) else {}
-        for k, label in field_map.items():
-            if k in flat:
-                display[label] = flat[k]
-
-        if display:
-            cols = st.columns(min(len(display), 4))
-            for i, (label, val) in enumerate(display.items()):
+        if items:
+            cols = st.columns(min(len(items), 4))
+            for i, (label, val) in enumerate(items.items()):
                 with cols[i % 4]:
                     try:
                         fval = float(val)
-                        if "%" not in label:
-                            sign = "+" if fval > 0 else ""
-                            display_val = f"{fval:,.0f}"
-                        else:
-                            display_val = f"{fval:.2f}%"
+                        display = f"{fval:.2f}%" if "%" in label else f"{fval:,.0f}"
                     except Exception:
-                        display_val = str(val)
-                    st.metric(label, display_val)
+                        display = str(val)
+                    st.metric(label, display)
+        else:
+            # Fallback: show all numeric fields
+            numeric = {k: v for k, v in bal_data.items() if isinstance(v, (int, float, str)) and k != "accountNo"}
+            if numeric:
+                st.dataframe(
+                    pd.DataFrame([{"Chỉ tiêu": k, "Giá trị": v} for k, v in numeric.items()]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
-        with st.expander("Raw JSON"):
-            st.json(data)
+        with st.expander("📋 Raw JSON"):
+            st.json(bal_data)
     else:
         st.caption("Nhấn **Tải số dư** để xem thông tin tài sản.")
