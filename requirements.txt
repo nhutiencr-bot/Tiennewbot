@@ -1,3 +1,5 @@
-dnse-sdk-openapi>=2.0.0
 streamlit>=1.35.0
-pandas>=2.0.0
+httpx>=0.27.0
+pandas>=2.1.0
+numpy>=1.26.0
+plotly>=5.22.0
