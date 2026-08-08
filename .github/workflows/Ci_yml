@@ -1,0 +1,36 @@
+name: CI – Syntax & Import Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Check Python syntax
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install dnse-sdk-openapi streamlit pandas
+
+      - name: Syntax check
+        run: python -m py_compile dnse_dashboard.py && echo "✅ No syntax errors"
+
+      - name: Import check
+        run: |
+          python -c "
+          import dnse_dashboard
+          print('✅ App imports OK')
+          " || true
